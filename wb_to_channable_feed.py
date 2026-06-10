@@ -4,13 +4,16 @@ WB → Channable feed generator for Amazon.ae
 """
 
 import json
-import re
 import logging
+import os
+import re
+import shutil
+from datetime import datetime
 from time import sleep
 from urllib.parse import quote
 
-from elasticsearch import Elasticsearch
 import requests
+from elasticsearch import Elasticsearch
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -51,6 +54,18 @@ BARCODES: dict[str, str] = {
     "LCAC 1100": "6295157511057",
     "LCAC 1104": "6295157511040",
     "LCAC 1162": "6295157511033",
+
+    # 03 06
+    "LCAC 1189": "6295157511149",
+    "LCAC 1491": "6295157511231",
+    "LCAC 1814": "6295157511224",
+    "LCAC 1858": "6295157511217",
+    "LCAC 1904": "6295157511200",
+    "LCAC 1916": "6295157511194",
+    "LCAC 1918": "6295157511187",
+    "LCAC 1919": "6295157511170",
+    "LCAC 1941": "6295157511163",
+    "LCAC 1950": "6295157511156",
 }
 
 
@@ -124,7 +139,6 @@ def clean_description(text: str) -> str:
     text = text.replace(DESCRIPTION_STRIP_PHRASE, "")
     text = text.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
     return re.sub(r" {2,}", " ", text).strip()
-
 
 
 def get_characteristic(characteristics: list, name: str) -> str:
@@ -203,10 +217,10 @@ def build_assemblity_html(cars: list[dict] | None) -> str:
 
     rows = []
     for car in cars:
-        mark   = car.get("MARK", "")
-        model  = car.get("MODEL", "")
+        mark = car.get("MARK", "")
+        model = car.get("MODEL", "")
         encode = car.get("ENCODE", "")
-        start  = (car.get("START") or "")[:4]
+        start = (car.get("START") or "")[:4]
         finish = (car.get("FINISH") or "")[:4]
         period = f"{start} - {finish}" if finish else f"{start} - present"
         volume = str(car.get("ENGINEVOLUME_L", ""))
@@ -287,52 +301,52 @@ def wb_doc_to_feed_item(doc: dict, barcode_map: dict, npr_map: dict) -> dict | N
     images_by_num = get_base_images(npr.get("product_images"))
     images_ordered = [images_by_num[n] for n in sorted(images_by_num)]
 
-    oem_string    = extract_oem_codes(npr.get("oem"))
-    cars          = npr.get("cars_new") or []
-    car_marks     = deduplicate_marks(cars)
-    car_models    = deduplicate_models(cars)
+    oem_string = extract_oem_codes(npr.get("oem"))
+    cars = npr.get("cars_new") or []
+    car_marks = deduplicate_marks(cars)
+    car_models = deduplicate_models(cars)
     assemblity_html = build_assemblity_html(cars)
 
     garant_val = npr.get("garant_val")
-    warranty   = str(garant_val) if garant_val is not None else DEFAULT_WARRANTY
+    warranty = str(garant_val) if garant_val is not None else DEFAULT_WARRANTY
 
-    country_raw   = get_characteristic(characteristics, "Страна производства")
-    weight_kg     = get_characteristic(characteristics, "Вес без упаковки (кг)")
+    country_raw = get_characteristic(characteristics, "Страна производства")
+    weight_kg = get_characteristic(characteristics, "Вес без упаковки (кг)")
     manuf_article = get_characteristic(characteristics, "Артикул производителя")
 
     log.info(f"Переводим: {vendor_code}")
-    title_en            = translate(doc.get("title", ""))
+    title_en = translate(doc.get("title", ""))
     description_en_text = translate(clean_description(doc.get("description", "")))
     description_en_html = f"<p>{description_en_text}</p>" if description_en_text else ""
-    product_type_en     = translate(doc.get("subjectName", ""))
-    country_en          = translate(country_raw)
+    product_type_en = translate(doc.get("subjectName", ""))
+    country_en = translate(country_raw)
 
     item: dict = {
-        "id":                       vendor_code,
-        "gtin":                     ean,
-        "brand":                    doc.get("brand", ""),
-        "mpn":                      manuf_article or vendor_code,
-        "title":                    title_en,
-        "description":              description_en_html,
-        "product_type":             product_type_en,
-        "country_of_origin":        country_en,
-        "link":                     build_product_link(vendor_code),
-        "price":                    f"0.00 {CURRENCY}",
-        "availability":             "out of stock",
-        "condition":                "new",
-        "item_group_id":            str(doc.get("imtID", "")),
-        "product_weight":           kg_to_g(weight_kg),
-        "shipping_weight":          kg_to_g(dimensions.get("weightBrutto", "")),
-        "product_length":           cm_to_mm(dimensions.get("length")),
-        "product_width":            cm_to_mm(dimensions.get("width")),
-        "product_height":           cm_to_mm(dimensions.get("height")),
-        "OEM":                      oem_string,
-        "Key Product Features":     oem_string,
-        "Manufacturer":             doc.get("brand", ""),
+        "id": vendor_code,
+        "gtin": ean,
+        "brand": doc.get("brand", ""),
+        "mpn": manuf_article or vendor_code,
+        "title": title_en,
+        "description": description_en_html,
+        "product_type": product_type_en,
+        "country_of_origin": country_en,
+        "link": build_product_link(vendor_code),
+        "price": f"0.00 {CURRENCY}",
+        "availability": "out of stock",
+        "condition": "new",
+        "item_group_id": str(doc.get("imtID", "")),
+        "product_weight": kg_to_g(weight_kg),
+        "shipping_weight": kg_to_g(dimensions.get("weightBrutto", "")),
+        "product_length": cm_to_mm(dimensions.get("length")),
+        "product_width": cm_to_mm(dimensions.get("width")),
+        "product_height": cm_to_mm(dimensions.get("height")),
+        "OEM": oem_string,
+        "Key Product Features": oem_string,
+        "Manufacturer": doc.get("brand", ""),
         "Manufacturer Part Number": manuf_article or vendor_code,
-        "Quantity":                 0,
-        "Warranty":                 warranty,
-        "Assemblity_description":   assemblity_html,
+        "Quantity": 0,
+        "Warranty": warranty,
+        "Assemblity_description": assemblity_html,
     }
 
     for i, url in enumerate(images_ordered[:7], start=1):
@@ -359,24 +373,56 @@ def main():
     es = Elasticsearch(ES_HOST, basic_auth=(ES_USER, ES_PASSWORD))
 
     codes = list(BARCODES.keys())
-    log.info(f"Ищем {len(codes)} товаров в {ES_INDEX}...")
 
-    docs = fetch_docs_by_vendor_codes(es, ES_INDEX, codes)
-    log.info(f"Найдено WB-документов: {len(docs)}")
+    # ── Загружаем существующий фид если есть ────────────────────────────────
+    existing_items: list[dict] = []
+    existing_ids: set[str] = set()
 
-    npr_map = fetch_npr_data_by_codes(es, codes)
-    log.info(f"NPR найдено: {len(npr_map)}")
+    if os.path.exists(OUTPUT_FILE):
+        try:
+            with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
+                existing_items = json.load(f)
+            existing_ids = {item["id"] for item in existing_items if "id" in item}
+            log.info(f"Найден существующий фид: {len(existing_items)} товаров, id: {existing_ids}")
 
-    feed = []
-    for doc in docs:
-        item = wb_doc_to_feed_item(doc, BARCODES, npr_map)
-        if item:
-            feed.append(item)
+            # Бэкап старого файла
+            ts = datetime.now().strftime("%Y%m%d_%H%M")
+            backup_name = OUTPUT_FILE.replace(".json", f"_{ts}.json")
+            shutil.copy2(OUTPUT_FILE, backup_name)
+            log.info(f"Бэкап сохранён: {backup_name}")
+        except Exception as e:
+            log.warning(f"Не удалось прочитать существующий фид: {e}. Генерируем с нуля.")
+            existing_items = []
+            existing_ids = set()
 
-    log.info(f"Товаров в фиде: {len(feed)}")
+    # ── Только новые коды (которых нет в существующем фиде) ─────────────────
+    new_codes = [c for c in codes if c not in existing_ids]
+    log.info(f"Новых товаров для генерации: {len(new_codes)} (пропускаем {len(existing_ids)} уже существующих)")
+
+    new_feed: list[dict] = []
+
+    if new_codes:
+        docs = fetch_docs_by_vendor_codes(es, ES_INDEX, new_codes)
+        log.info(f"Найдено WB-документов для новых товаров: {len(docs)}")
+
+        npr_map = fetch_npr_data_by_codes(es, new_codes)
+        log.info(f"NPR найдено: {len(npr_map)}")
+
+        for doc in docs:
+            item = wb_doc_to_feed_item(doc, BARCODES, npr_map)
+            if item:
+                new_feed.append(item)
+
+        log.info(f"Сгенерировано новых товаров: {len(new_feed)}")
+    else:
+        log.info("Все товары уже есть в фиде, новых для генерации нет.")
+
+    # ── Итоговый фид = старые + новые ───────────────────────────────────────
+    final_feed = existing_items + new_feed
+    log.info(f"Итого товаров в фиде: {len(final_feed)}")
 
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(feed, f, ensure_ascii=False, indent=2)
+        json.dump(final_feed, f, ensure_ascii=False, indent=2)
 
     log.info(f"Сохранено: {OUTPUT_FILE}")
 
