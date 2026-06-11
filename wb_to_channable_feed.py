@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 WB → Channable feed generator for Amazon.ae
 """
@@ -11,6 +10,8 @@ import shutil
 from datetime import datetime
 from time import sleep
 from urllib.parse import quote
+
+from constants import BARCODES
 
 import requests
 from elasticsearch import Elasticsearch
@@ -27,7 +28,7 @@ ES_PASSWORD = "ElasticsearCH_Secure_Pass_2025!!!"
 
 OUTPUT_FILE = "feed.json"
 
-TRANSLATOR_URL = "http://localhost:8020/translator"
+TRANSLATOR_URL = "http://localhost:8000/translator"
 TRANSLATOR_API_KEY = "11100100"
 TRANSLATOR_TARGET_LANG = "en"
 
@@ -41,32 +42,6 @@ STORE_BASE_URL = "https://en.carville-autoparts.cn"
 CURRENCY = "AED"
 
 DESCRIPTION_STRIP_PHRASE = "Для проверки применяемости отправьте VIN автомобиля через вкладку Вопросы!"
-
-BARCODES: dict[str, str] = {
-    "LCAC 0553": "6295157511132",
-    "LCAC 0811": "6295157511125",
-    "LCAC 0834": "6295157511118",
-    "LCAC 0864": "6295157511101",
-    "LCAC 0865": "6295157511095",
-    "LCAC 08H1": "6295157511088",
-    "LCAC 08L4": "6295157511071",
-    "LCAC 08S5": "6295157511064",
-    "LCAC 1100": "6295157511057",
-    "LCAC 1104": "6295157511040",
-    "LCAC 1162": "6295157511033",
-
-    # 03 06
-    "LCAC 1189": "6295157511149",
-    "LCAC 1491": "6295157511231",
-    "LCAC 1814": "6295157511224",
-    "LCAC 1858": "6295157511217",
-    "LCAC 1904": "6295157511200",
-    "LCAC 1916": "6295157511194",
-    "LCAC 1918": "6295157511187",
-    "LCAC 1919": "6295157511170",
-    "LCAC 1941": "6295157511163",
-    "LCAC 1950": "6295157511156",
-}
 
 
 # ─── TRANSLATOR ──────────────────────────────────────────────────────────────
@@ -89,7 +64,7 @@ def translate(text: str) -> str:
                 timeout=30,
             )
             resp.raise_for_status()
-            sleep(5)
+            sleep(0.1)
             return resp.json().get("translated_text") or text
 
         except requests.exceptions.HTTPError as e:
@@ -396,7 +371,7 @@ def main():
             existing_ids = set()
 
     # ── Только новые коды (которых нет в существующем фиде) ─────────────────
-    new_codes = [c for c in codes if c not in existing_ids]
+    new_codes = list({c for c in codes if c not in existing_ids})
     log.info(f"Новых товаров для генерации: {len(new_codes)} (пропускаем {len(existing_ids)} уже существующих)")
 
     new_feed: list[dict] = []
@@ -404,14 +379,22 @@ def main():
     if new_codes:
         docs = fetch_docs_by_vendor_codes(es, ES_INDEX, new_codes)
         log.info(f"Найдено WB-документов для новых товаров: {len(docs)}")
+        if len(docs) < len(new_codes):
+
+            wb_vendor_codes = list({doc.get("vendorCode") for doc in docs})
+            diff = [x for x in new_codes if x not in wb_vendor_codes]
+
+            log.info(f"Есть {len(diff)} карточек которые отсутствуют в WB")
+            log.info(f"Пример: {diff}")
 
         npr_map = fetch_npr_data_by_codes(es, new_codes)
         log.info(f"NPR найдено: {len(npr_map)}")
 
-        for doc in docs:
+        for id_, doc in enumerate(docs, start=1):
             item = wb_doc_to_feed_item(doc, BARCODES, npr_map)
             if item:
                 new_feed.append(item)
+            log.info(f"{id_}/{len(docs)}")
 
         log.info(f"Сгенерировано новых товаров: {len(new_feed)}")
     else:
