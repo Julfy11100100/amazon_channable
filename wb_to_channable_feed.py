@@ -15,31 +15,34 @@ from constants import BARCODES
 
 import requests
 from elasticsearch import Elasticsearch
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────────
-ES_HOST = "http://localhost:9200"
-ES_INDEX = "wb_products_954e1027"
-ES_INDEX_IMAGES = "npr_products_data"
-ES_USER = "elastic"
-ES_PASSWORD = "ElasticsearCH_Secure_Pass_2025!!!"
+class Settings(BaseSettings):
+    """Настройки приложения из переменных окружения и файла .env."""
 
-OUTPUT_FILE = "feed.json"
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
-TRANSLATOR_URL = "http://localhost:8000/translator"
-TRANSLATOR_API_KEY = "11100100"
-TRANSLATOR_TARGET_LANG = "en"
+    es_host: str = "http://localhost:9200"
+    es_index: str
+    es_index_images: str
+    es_user: str
+    es_password: str
+    output_file: str = "feed.json"
+    translator_url: str
+    translator_api_key: str
+    translator_target_lang: str = "en"
+    translator_retries: int = 3
+    translator_retry_delay: int = 15
+    default_warranty: str = "24"
+    store_base_url: str
+    currency: str = "AED"
 
-# Кол-во попыток при 5xx ошибках переводчика
-TRANSLATOR_RETRIES = 3
-TRANSLATOR_RETRY_DELAY = 15  # секунд между попытками
 
-DEFAULT_WARRANTY = "24"
-
-STORE_BASE_URL = "https://en.carville-autoparts.cn"
-CURRENCY = "AED"
+settings = Settings()
 
 DESCRIPTION_STRIP_PHRASE = "Для проверки применяемости отправьте VIN автомобиля через вкладку Вопросы!"
 
@@ -48,19 +51,19 @@ DESCRIPTION_STRIP_PHRASE = "Для проверки применяемости �
 
 def translate(text: str) -> str:
     """
-    Переводит текст. При 5xx ошибках (502, 503, 504) делает TRANSLATOR_RETRIES
-    повторных попыток с паузой TRANSLATOR_RETRY_DELAY секунд.
+    Переводит текст. При 5xx ошибках (502, 503, 504) повторяет запрос
+    согласно настройкам translator_retries и translator_retry_delay.
     При других ошибках возвращает оригинальный текст без retry.
     """
     if not text:
         return ""
 
-    for attempt in range(1, TRANSLATOR_RETRIES + 1):
+    for attempt in range(1, settings.translator_retries + 1):
         try:
             resp = requests.post(
-                TRANSLATOR_URL,
-                headers={"X-API-Key": TRANSLATOR_API_KEY, "Content-Type": "application/json"},
-                json={"text": text, "target_language": TRANSLATOR_TARGET_LANG},
+                settings.translator_url,
+                headers={"X-API-Key": settings.translator_api_key, "Content-Type": "application/json"},
+                json={"text": text, "target_language": settings.translator_target_lang},
                 timeout=30,
             )
             resp.raise_for_status()
@@ -69,32 +72,32 @@ def translate(text: str) -> str:
 
         except requests.exceptions.HTTPError as e:
             status = e.response.status_code if e.response is not None else 0
-            if status in (502, 503, 504) and attempt < TRANSLATOR_RETRIES:
+            if status in (502, 503, 504) and attempt < settings.translator_retries:
                 log.warning(
-                    f"Переводчик вернул {status}, попытка {attempt}/{TRANSLATOR_RETRIES}. "
-                    f"Жду {TRANSLATOR_RETRY_DELAY}с... Текст: '{text[:50]}...'"
+                    f"Переводчик вернул {status}, попытка {attempt}/{settings.translator_retries}. "
+                    f"Жду {settings.translator_retry_delay}с... Текст: '{text[:50]}...'"
                 )
-                sleep(TRANSLATOR_RETRY_DELAY)
+                sleep(settings.translator_retry_delay)
                 continue
             else:
                 log.warning(f"Ошибка перевода [{status}] '{text[:50]}...': {e}")
                 return text
 
         except requests.exceptions.ConnectionError as e:
-            if attempt < TRANSLATOR_RETRIES:
+            if attempt < settings.translator_retries:
                 log.warning(
-                    f"Нет соединения с переводчиком, попытка {attempt}/{TRANSLATOR_RETRIES}. "
-                    f"Жду {TRANSLATOR_RETRY_DELAY}с..."
+                    f"Нет соединения с переводчиком, попытка {attempt}/{settings.translator_retries}. "
+                    f"Жду {settings.translator_retry_delay}с..."
                 )
-                sleep(TRANSLATOR_RETRY_DELAY)
+                sleep(settings.translator_retry_delay)
                 continue
             log.warning(f"Переводчик недоступен: {e}")
             return text
 
         except requests.exceptions.Timeout:
-            if attempt < TRANSLATOR_RETRIES:
-                log.warning(f"Таймаут переводчика, попытка {attempt}/{TRANSLATOR_RETRIES}.")
-                sleep(TRANSLATOR_RETRY_DELAY)
+            if attempt < settings.translator_retries:
+                log.warning(f"Таймаут переводчика, попытка {attempt}/{settings.translator_retries}.")
+                sleep(settings.translator_retry_delay)
                 continue
             log.warning(f"Переводчик не ответил за 30с: '{text[:50]}...'")
             return text
@@ -127,7 +130,7 @@ def get_characteristic(characteristics: list, name: str) -> str:
 
 
 def build_product_link(vendor_code: str) -> str:
-    return f"{STORE_BASE_URL}/{quote(vendor_code)}"
+    return f"{settings.store_base_url}/{quote(vendor_code)}"
 
 
 # ─── IMAGES ──────────────────────────────────────────────────────────────────
@@ -232,7 +235,7 @@ def fetch_docs_by_vendor_codes(es: Elasticsearch, index: str, codes: list[str]) 
 
 def fetch_npr_data_by_codes(es: Elasticsearch, codes: list[str]) -> dict[str, dict]:
     resp = es.search(
-        index=ES_INDEX_IMAGES,
+        index=settings.es_index_images,
         size=len(codes),
         query={"terms": {"code": codes}},
         source=["code", "product_images", "oem", "cars_new", "garant_val"],
@@ -283,7 +286,7 @@ def wb_doc_to_feed_item(doc: dict, barcode_map: dict, npr_map: dict) -> dict | N
     assemblity_html = build_assemblity_html(cars)
 
     garant_val = npr.get("garant_val")
-    warranty = str(garant_val) if garant_val is not None else DEFAULT_WARRANTY
+    warranty = str(garant_val) if garant_val is not None else settings.default_warranty
 
     country_raw = get_characteristic(characteristics, "Страна производства")
     weight_kg = get_characteristic(characteristics, "Вес без упаковки (кг)")
@@ -306,7 +309,7 @@ def wb_doc_to_feed_item(doc: dict, barcode_map: dict, npr_map: dict) -> dict | N
         "product_type": product_type_en,
         "country_of_origin": country_en,
         "link": build_product_link(vendor_code),
-        "price": f"0.00 {CURRENCY}",
+        "price": f"0.00 {settings.currency}",
         "availability": "out of stock",
         "condition": "new",
         "item_group_id": str(doc.get("imtID", "")),
@@ -345,7 +348,7 @@ def wb_doc_to_feed_item(doc: dict, barcode_map: dict, npr_map: dict) -> dict | N
 # ─── ENTRY POINT ─────────────────────────────────────────────────────────────
 
 def main():
-    es = Elasticsearch(ES_HOST, basic_auth=(ES_USER, ES_PASSWORD))
+    es = Elasticsearch(settings.es_host, basic_auth=(settings.es_user, settings.es_password))
 
     codes = list(BARCODES.keys())
 
@@ -353,17 +356,17 @@ def main():
     existing_items: list[dict] = []
     existing_ids: set[str] = set()
 
-    if os.path.exists(OUTPUT_FILE):
+    if os.path.exists(settings.output_file):
         try:
-            with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
+            with open(settings.output_file, "r", encoding="utf-8") as f:
                 existing_items = json.load(f)
             existing_ids = {item["id"] for item in existing_items if "id" in item}
             log.info(f"Найден существующий фид: {len(existing_items)} товаров, id: {existing_ids}")
 
             # Бэкап старого файла
             ts = datetime.now().strftime("%Y%m%d_%H%M")
-            backup_name = OUTPUT_FILE.replace(".json", f"_{ts}.json")
-            shutil.copy2(OUTPUT_FILE, backup_name)
+            backup_name = settings.output_file.replace(".json", f"_{ts}.json")
+            shutil.copy2(settings.output_file, backup_name)
             log.info(f"Бэкап сохранён: {backup_name}")
         except Exception as e:
             log.warning(f"Не удалось прочитать существующий фид: {e}. Генерируем с нуля.")
@@ -377,7 +380,7 @@ def main():
     new_feed: list[dict] = []
 
     if new_codes:
-        docs = fetch_docs_by_vendor_codes(es, ES_INDEX, new_codes)
+        docs = fetch_docs_by_vendor_codes(es, settings.es_index, new_codes)
         log.info(f"Найдено WB-документов для новых товаров: {len(docs)}")
         if len(docs) < len(new_codes):
 
@@ -404,10 +407,10 @@ def main():
     final_feed = existing_items + new_feed
     log.info(f"Итого товаров в фиде: {len(final_feed)}")
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    with open(settings.output_file, "w", encoding="utf-8") as f:
         json.dump(final_feed, f, ensure_ascii=False, indent=2)
 
-    log.info(f"Сохранено: {OUTPUT_FILE}")
+    log.info(f"Сохранено: {settings.output_file}")
 
 
 if __name__ == "__main__":
